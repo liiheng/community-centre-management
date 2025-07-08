@@ -1,0 +1,99 @@
+body {
+    margin: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f0f0f0;
+    color: #333;
+}
+
+/* Background slideshow */
+.background-slideshow {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 100%;
+    z-index: -1;
+}
+
+.bg-slide {
+    position: absolute;
+    height: 100%;
+    width: 100%;
+    opacity: 0;
+    background-size: cover;
+    background-position: center;
+    transition: opacity 2s ease-in-out;
+}
+
+.bg-slide.active {
+    opacity: 1;
+}
+
+/* Login/Register Box Styling */
+.login-container {
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.login-box {
+    background-color: rgba(255, 255, 255, 0.95);
+    padding: 30px;
+    border-radius: 10px;
+    max-width: 400px;
+    width: 100%;
+    box-shadow: 0 0 10px rgba(0,0,0,0.2);
+}
+
+.login-box h1,
+.login-box p {
+    text-align: center;
+}
+
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+}
+
+.form-group input,
+.form-group select {
+    width: 100%;
+    padding: 8px;
+    box-sizing: border-box;
+}
+
+button {
+    padding: 10px 20px;
+    width: 100%;
+    background-color: #3366cc;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #254a99;
+}
+
+.links {
+    margin-top: 15px;
+    text-align: center;
+}
+
+.success {
+    color: green;
+    margin-bottom: 10px;
+}
+
+.error {
+    color: red;
+    margin-bottom: 10px;
+}
