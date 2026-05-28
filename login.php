@@ -52,19 +52,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         <form method="post" action="">
             <div class="form-group">
-                <label>Email or Username:</label>
+                <label><b>Email or Username:</b></label>
                 <input type="text" name="email_or_username" required>
             </div>
             <div class="form-group">
-                <label>Password:</label>
+                <label><b>Password:</b></label>
                 <input type="password" name="password" required>
             </div>
             <button type="submit">Login</button>
         </form>
 
         <div class="links">
-            <a href="register.php">Register Account</a> |
-            <a href="forgot_password.php">Forgot Password?</a>
+            <a href="register.php">Register Account</a>
         </div>
     </div>
 </div>

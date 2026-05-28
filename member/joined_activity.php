@@ -2,11 +2,13 @@
 session_start();
 include '../includes/db.php';
 
-// Only admin can access
-if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
+// Only member can access
+if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'member') {
     header("Location: ../login.php");
     exit();
 }
+
+$user_id = $_SESSION['user_id'];
 
 // View mode
 $view = $_GET['view'] ?? 'list';
@@ -15,24 +17,29 @@ $view = $_GET['view'] ?? 'list';
 $month = isset($_GET['month']) ? intval($_GET['month']) : date('n');
 $year = isset($_GET['year']) ? intval($_GET['year']) : date('Y');
 
-// Default filter for list view
-$status_filter = $_GET['status'] ?? 'pending';
+// Default filter for list view (keeps same param names for UI similarity)
+$status_filter = $_GET['status'] ?? '';
 $search = $_GET['search'] ?? '';
 $sort = $_GET['sort'] ?? 'date_desc';
 $page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
 $limit = 10;
 $offset = ($page - 1) * $limit;
 
-$conditions = "1=1";
+$conditions = "1=1 AND t.status = 'approved'"; // only approved activities shown for joined members
 $params = [];
+$types = '';
+
+// If user filters by status (keeps UI same though probably not needed for member view)
 if ($status_filter) {
     $conditions .= " AND t.status = ?";
     $params[] = $status_filter;
+    $types .= 's';
 }
 if ($search) {
     $conditions .= " AND (t.title LIKE ? OR u.name LIKE ?)";
     $params[] = "%$search%";
     $params[] = "%$search%";
+    $types .= 'ss';
 }
 
 // Sorting
@@ -43,51 +50,25 @@ switch ($sort) {
     default:           $order_by = "t.start_date DESC";
 }
 
-// Handle status change
-if (isset($_GET['id']) && isset($_GET['new_status'])) {
-    $id = intval($_GET['id']);
-    $newStatus = $_GET['new_status'];
-    $stmt = $conn->prepare("UPDATE temp_activities SET status=? WHERE id=?");
-    $stmt->bind_param('si', $newStatus, $id);
-    $stmt->execute();
-    $stmt->close();
-    
-    // Build redirect URL to maintain current filters
-    $redirectParams = [];
-    $redirectParams['view'] = $_GET['view'] ?? 'list';
-    if (isset($_GET['month'])) $redirectParams['month'] = $_GET['month'];
-    if (isset($_GET['year'])) $redirectParams['year'] = $_GET['year'];
-    if (isset($_GET['status']) && $_GET['status'] !== '') $redirectParams['status'] = $_GET['status'];
-    if (isset($_GET['search']) && $_GET['search'] !== '') $redirectParams['search'] = $_GET['search'];
-    if (isset($_GET['sort'])) $redirectParams['sort'] = $_GET['sort'];
-    if (isset($_GET['page'])) $redirectParams['page'] = $_GET['page'];
-    
-    $redirectUrl = 'approve_activity.php?' . http_build_query($redirectParams);
-    header("Location: $redirectUrl");
-    exit();
-}
+// Handle unregister (via GET to keep behavior consistent with approve_activity.php style)
+if (isset($_GET['unregister_id'])) {
+    $unregister_id = intval($_GET['unregister_id']);
 
-// Handle deletion
-if (isset($_GET['delete_id'])) {
-    $delete_id = intval($_GET['delete_id']);
-
-    $poster_query = $conn->prepare("SELECT poster FROM temp_activities WHERE id = ?");
-    $poster_query->bind_param('i', $delete_id);
-    $poster_query->execute();
-    $poster_query->bind_result($poster_path);
-    $poster_query->fetch();
-    $poster_query->close();
-
-    if (!empty($poster_path)) {
-        $full_path = "../" . $poster_path;
-        if (file_exists($full_path)) unlink($full_path);
+    // Ensure the participant belongs to this user before deleting
+    $check = $conn->prepare("SELECT id FROM participants WHERE id = ? AND user_id = ?");
+    $check->bind_param('ii', $unregister_id, $user_id);
+    $check->execute();
+    $check->store_result();
+    if ($check->num_rows > 0) {
+        $check->close();
+        $del = $conn->prepare("DELETE FROM participants WHERE id = ?");
+        $del->bind_param('i', $unregister_id);
+        $del->execute();
+        $del->close();
+    } else {
+        $check->close();
     }
 
-    $delete_stmt = $conn->prepare("DELETE FROM temp_activities WHERE id = ?");
-    $delete_stmt->bind_param('i', $delete_id);
-    $delete_stmt->execute();
-    $delete_stmt->close();
-
     // Build redirect URL to maintain current filters
     $redirectParams = [];
     $redirectParams['view'] = $_GET['view'] ?? 'list';
@@ -97,21 +78,28 @@ if (isset($_GET['delete_id'])) {
     if (isset($_GET['search']) && $_GET['search'] !== '') $redirectParams['search'] = $_GET['search'];
     if (isset($_GET['sort'])) $redirectParams['sort'] = $_GET['sort'];
     if (isset($_GET['page'])) $redirectParams['page'] = $_GET['page'];
-    
-    $redirectUrl = 'approve_activity.php?' . http_build_query($redirectParams);
+
+    $redirectUrl = 'joined_activity.php?' . http_build_query($redirectParams);
     header("Location: $redirectUrl");
     exit();
 }
 
-// Count total rows for list view pagination
-$stmt = $conn->prepare("SELECT COUNT(*) 
+// Count total rows for list view pagination (only activities this member joined)
+$countSql = "SELECT COUNT(*) 
     FROM temp_activities t 
     JOIN users u ON t.organizer_id = u.id 
-    LEFT JOIN rooms r ON t.room = r.id 
-    WHERE $conditions");
+    LEFT JOIN rooms r ON t.room = r.id
+    JOIN participants p ON p.activity_id = t.id
+    WHERE p.user_id = ? AND $conditions";
+
+$stmt = $conn->prepare($countSql);
 if (!empty($params)) {
-    $types = str_repeat('s', count($params));
-    $stmt->bind_param($types, ...$params);
+    // bind dynamic types plus leading 'i' for user_id
+    $bind_types = 'i' . $types;
+    $bind_vals = array_merge([$user_id], $params);
+    $stmt->bind_param($bind_types, ...$bind_vals);
+} else {
+    $stmt->bind_param('i', $user_id);
 }
 $stmt->execute();
 $stmt->bind_result($total_rows);
@@ -121,34 +109,46 @@ $stmt->close();
 $total_pages = ceil($total_rows / $limit);
 
 // Fetch for list view
-$query = "SELECT t.*, u.name AS organizer_name, r.name AS room_name 
+$query = "SELECT t.*, u.name AS organizer_name, r.name AS room_name, p.id AS participant_id
           FROM temp_activities t 
           JOIN users u ON t.organizer_id = u.id 
           LEFT JOIN rooms r ON t.room = r.id 
-          WHERE $conditions 
+          JOIN participants p ON p.activity_id = t.id
+          WHERE p.user_id = ? AND $conditions
           ORDER BY $order_by 
-          LIMIT $limit OFFSET $offset";
+          LIMIT ? OFFSET ?";
+
 $stmt = $conn->prepare($query);
 if (!empty($params)) {
-    $stmt->bind_param($types, ...$params);
+    $bind_types = 'i' . $types . 'ii'; // i for user_id, params types, ii for limit offset
+    $bind_vals = array_merge([$user_id], $params, [$limit, $offset]);
+    $stmt->bind_param($bind_types, ...$bind_vals);
+} else {
+    $stmt->bind_param('iii', $user_id, $limit, $offset);
 }
 $stmt->execute();
 $result = $stmt->get_result();
 
-// Fetch all for calendar view
-$all = $conn->query("SELECT t.*, u.name AS organizer_name, r.name AS room_name 
-                     FROM temp_activities t 
-                     JOIN users u ON t.organizer_id = u.id 
-                     LEFT JOIN rooms r ON t.room = r.id");
+// Fetch joined activities for calendar view (all joined, no pagination)
+$all = $conn->prepare("SELECT t.*, u.name AS organizer_name, r.name AS room_name, p.id AS participant_id
+                       FROM temp_activities t
+                       JOIN users u ON t.organizer_id = u.id
+                       LEFT JOIN rooms r ON t.room = r.id
+                       JOIN participants p ON p.activity_id = t.id
+                       WHERE p.user_id = ?");
+$all->bind_param('i', $user_id);
+$all->execute();
+$allRes = $all->get_result();
 $calendarEvents = [];
-while ($row = $all->fetch_assoc()) {
+while ($row = $allRes->fetch_assoc()) {
     $calendarEvents[] = $row;
 }
+$all->close();
 ?>
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Approve Activities</title>
+    <title>My Joined Activities</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
         body { font-family: Arial,sans-serif; background:#f4f6f9; margin:0; padding:20px; }
@@ -167,8 +167,9 @@ while ($row = $all->fetch_assoc()) {
         .status-approved { background:#d4edda; color:#155724; }
         .status-pending { background:#fff3cd; color:#856404; }
         .status-rejected { background:#f8d7da; color:#721c24; }
-        .activity-actions a { margin-right:8px; padding:6px 10px; border-radius:5px; font-size:13px; color:#fff; text-decoration:none; }
-        .approve-btn { background:#007bff; } .reject-btn { background:#6c757d; } .delete-btn { background:#dc3545; }
+        .activity-actions a { margin-right:8px; padding:6px 10px; border-radius:5px; font-size:13px; color:#fff; text-decoration:none; border:none; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+        .activity-actions a.unreg-btn { background:#dc3545; }
+        .activity-actions a.addcal-btn { background:#007bff; }
         .calendar-nav { display:flex; justify-content:center; align-items:center; gap:12px; margin:20px 0; }
         .calendar-nav button { background:#007bff; color:#fff; border:none; padding:8px 12px; border-radius:5px; cursor:pointer; font-size:14px; font-weight:bold; transition:0.2s; }
         .calendar-nav button:hover { background:#0056b3; }
@@ -288,7 +289,7 @@ while ($row = $all->fetch_assoc()) {
             bottom:0;
             background:#fff;
         }
-        .modal-actions a { 
+        .modal-actions a, .modal-actions button { 
             text-decoration:none; 
             padding:6px 10px; 
             border-radius:5px; 
@@ -299,13 +300,14 @@ while ($row = $all->fetch_assoc()) {
             gap:5px;
             transition:all 0.2s;
             font-size:13px;
+            border:none;
+            cursor:pointer;
         }
-        .modal-actions a.approve-btn { background:#007bff; }
-        .modal-actions a.reject-btn { background:#6c757d; }
-        .modal-actions a.delete-btn { background:#dc3545; }
-        .modal-actions a:hover { opacity:0.85; }
+        .modal-actions .unregister-btn { background:#dc3545; }
+        .modal-actions .addcal-btn { background:#007bff; }
+        .modal-actions a:hover, .modal-actions button:hover { opacity:0.85; }
 
-        /* Pagination */
+        /* Pagination same as approve */
         .pagination {
             display: flex;
             justify-content: center;
@@ -349,7 +351,7 @@ while ($row = $all->fetch_assoc()) {
 <body>
 <?php include '../includes/header.php'; ?>
 
-<h2>Approve Activities</h2>
+<h2>My Joined Activities</h2>
 
 <div class="view-toggle">
     <a href="?view=list" class="list-btn">List View</a>
@@ -387,6 +389,8 @@ while ($row = $all->fetch_assoc()) {
     </tr>
     <?php while($row = $result->fetch_assoc()): 
         $displayRoom = $row['room_name'] ?? 'Not Assigned';
+        // Include participant id to allow unregister
+        $participant_id = $row['participant_id'];
         $json = json_encode($row, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT);
     ?>
     <tr onclick='showModalFromEvent(<?php echo $json; ?>)'>
@@ -399,9 +403,10 @@ while ($row = $all->fetch_assoc()) {
             <span class="status-label status-<?=htmlspecialchars($row['status'])?>"><?=ucfirst(htmlspecialchars($row['status']))?></span>
         </td>
         <td class="activity-actions">
-            <a href="?id=<?=$row['id']?>&new_status=approved&view=list&status=<?=$status_filter?>&search=<?=urlencode($search)?>&sort=<?=$sort?>&page=<?=$page?>" class="approve-btn" onclick="event.stopPropagation();"><i class="fas fa-check"></i></a>
-            <a href="?id=<?=$row['id']?>&new_status=rejected&view=list&status=<?=$status_filter?>&search=<?=urlencode($search)?>&sort=<?=$sort?>&page=<?=$page?>" class="reject-btn" onclick="event.stopPropagation();"><i class="fas fa-times"></i></a>
-            <a href="?delete_id=<?=$row['id']?>&view=list&status=<?=$status_filter?>&search=<?=urlencode($search)?>&sort=<?=$sort?>&page=<?=$page?>" class="delete-btn" onclick="event.stopPropagation(); return confirm('Delete this activity?');"><i class="fas fa-trash"></i></a>
+            <!-- Unregister: uses unregister_id (participant id) -->
+            <a href="?unregister_id=<?=$participant_id?>&view=list&status=<?=$status_filter?>&search=<?=urlencode($search)?>&sort=<?=$sort?>&page=<?=$page?>" class="unreg-btn" onclick="event.stopPropagation(); return confirm('Unregister from this activity?');"><i class="fas fa-sign-out-alt"></i></a>
+            <!-- Add to Google Calendar -->
+            <a href="#" class="addcal-btn" onclick="event.stopPropagation(); openGoogleCalendar(<?php echo $json; ?>); return false;"><i class="fas fa-calendar-plus"></i></a>
         </td>
     </tr>
     <?php endwhile; ?>
@@ -498,16 +503,46 @@ for($i=0;$i<$weeks*7;$i++) {
                 <p><strong>Status:</strong> <span id="modalStatus" class="status-label"></span></p>
             </div>
             <div class="modal-actions">
-                <a href="#" id="approveBtn" class="approve-btn"><i class="fas fa-check"></i> Approve</a>
-                <a href="#" id="rejectBtn" class="reject-btn"><i class="fas fa-times"></i> Reject</a>
-                <a href="#" id="deleteBtn" class="delete-btn" onclick="return confirm('Are you sure you want to delete this activity? This action cannot be undone.');"><i class="fas fa-trash"></i> Delete</a>
+                <!-- Unregister button will use participant id (set in JS) -->
+                <a href="#" id="unregisterBtn" class="unregister-btn"><i class="fas fa-sign-out-alt"></i> Unregister</a>
+                <a href="#" id="addCalBtn" class="addcal-btn"><i class="fas fa-calendar-plus"></i> Add to Calendar</a>
             </div>
         </div>
     </div>
 </div>
 
 <script>
-function showModalFromEvent(event) {
+function pad(n){return n<10? '0'+n:''+n;}
+
+function toGoogleDateString(dtString){
+    var d = new Date(dtString);
+    // Use UTC time and format YYYYMMDDTHHMMSSZ
+    var yyyy = d.getUTCFullYear();
+    var mm = pad(d.getUTCMonth()+1);
+    var dd = pad(d.getUTCDate());
+    var hh = pad(d.getUTCHours());
+    var min = pad(d.getUTCMinutes());
+    var sec = pad(d.getUTCSeconds());
+    return ''+yyyy+mm+dd+'T'+hh+min+sec+'Z';
+}
+
+function openGoogleCalendar(ev){
+    if (!ev || !ev.start_date) return;
+    var start = toGoogleDateString(ev.start_date);
+    var end = toGoogleDateString(ev.end_date);
+    var title = encodeURIComponent(ev.title || '');
+    var details = encodeURIComponent(ev.description || '');
+    var location = encodeURIComponent(ev.room_name || ev.room || '');
+    var url = 'https://calendar.google.com/calendar/render?action=TEMPLATE'
+        + '&text=' + title
+        + '&details=' + details
+        + '&location=' + location
+        + '&dates=' + start + '/' + end;
+    window.open(url, '_blank');
+}
+
+function showModalFromEvent(evt) {
+    var event = evt; // keep name consistent
     document.getElementById("activityModal").style.display = "block";
     document.getElementById("modalPoster").src = event.poster ? "../" + event.poster : "../uploads/default_poster.png";
     document.getElementById("modalTitle").textContent = event.title;
@@ -515,36 +550,33 @@ function showModalFromEvent(event) {
     document.getElementById("modalOrganizer").textContent = event.organizer_name;
     document.getElementById("modalRoom").textContent = event.room_name || "Not Assigned";
     document.getElementById("modalAudience").textContent = event.target_audience || 'Not specified';
-    
-    // Format dates nicely
+
     var startDate = new Date(event.start_date);
     var endDate = new Date(event.end_date);
     document.getElementById("modalStart").textContent = startDate.toLocaleDateString() + ' ' + startDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     document.getElementById("modalEnd").textContent = endDate.toLocaleDateString() + ' ' + endDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    
-    // Status with styling
-    var statusSpan = document.getElementById("modalStatus");
-    statusSpan.textContent = event.status.charAt(0).toUpperCase() + event.status.slice(1);
-    statusSpan.className = "status-label status-" + event.status;
 
-    // Update action button URLs to maintain current view and filters
+    var statusSpan = document.getElementById("modalStatus");
+    statusSpan.textContent = event.status ? (event.status.charAt(0).toUpperCase() + event.status.slice(1)) : 'N/A';
+    statusSpan.className = "status-label status-" + (event.status || 'pending');
+
+    // Build unregister URL using participant_id
     var currentParams = new URLSearchParams(window.location.search);
-    var baseApproveUrl = "?id=" + event.id + "&new_status=approved";
-    var baseRejectUrl = "?id=" + event.id + "&new_status=rejected";
-    var baseDeleteUrl = "?delete_id=" + event.id;
-    
-    // Add current parameters to maintain state
+    var baseUnregUrl = "?unregister_id=" + (event.participant_id ? event.participant_id : '');
     for (let [key, value] of currentParams) {
-        if (key !== 'id' && key !== 'new_status' && key !== 'delete_id') {
-            baseApproveUrl += "&" + key + "=" + encodeURIComponent(value);
-            baseRejectUrl += "&" + key + "=" + encodeURIComponent(value);
-            baseDeleteUrl += "&" + key + "=" + encodeURIComponent(value);
+        if (key !== 'unregister_id') {
+            baseUnregUrl += "&" + key + "=" + encodeURIComponent(value);
         }
     }
-    
-    document.getElementById("approveBtn").href = baseApproveUrl;
-    document.getElementById("rejectBtn").href = baseRejectUrl;
-    document.getElementById("deleteBtn").href = baseDeleteUrl;
+    var unreg = document.getElementById('unregisterBtn');
+    unreg.href = baseUnregUrl;
+    unreg.onclick = function(e){
+        if (!confirm('Unregister from this activity?')){ e.preventDefault(); return false; }
+        // proceed to GET link
+    };
+
+    var addBtn = document.getElementById('addCalBtn');
+    addBtn.onclick = function(e){ e.preventDefault(); openGoogleCalendar(event); };
 }
 
 function closeModal() {

@@ -11,6 +11,17 @@ if (isset($_GET['id'])) {
     $stmt->execute();
 }
 
-header("Location: create_activity.php");
+// After deletion, redirect back to the referring page if it's the same host to preserve context.
+$fallback = 'create_activity.php';
+$redirect = $fallback;
+if (!empty($_SERVER['HTTP_REFERER'])) {
+    $ref = $_SERVER['HTTP_REFERER'];
+    $refHost = parse_url($ref, PHP_URL_HOST);
+    if ($refHost && $refHost === $_SERVER['HTTP_HOST']) {
+        $redirect = $ref;
+    }
+}
+
+header('Location: ' . $redirect);
 exit();
 ?>
