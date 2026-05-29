@@ -211,7 +211,7 @@ Make sure the following software is installed:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/community-centre-management.git
+git clone [https://github.com/yourusername/community-centre-management.git](https://github.com/liiheng/community-centre-management.git)
 ```
 
 ---
@@ -271,18 +271,27 @@ http://localhost/community_management
 
 ## Admin
 
-Email: [admin@gmail.com](mailto:admin@gmail.com)
-Password: admin123
+Username: admin
+
+Email: admin@gmail.com
+
+Password: asd
 
 ## Organiser
 
-Email: [organiser@gmail.com](mailto:organiser@gmail.com)
-Password: organiser123
+Username: zxc
+
+Email: zxc@gmail.com
+
+Password: zxc
 
 ## Member
 
-Email: [member@gmail.com](mailto:member@gmail.com)
-Password: member123
+Username: qwe
+
+Email: qwe@gmail.com
+
+Password: qwe
 
 ---
 
